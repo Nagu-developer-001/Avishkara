@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PageLayout, PageSupportingSection } from "@/components/layout/page-layout";
@@ -199,6 +199,7 @@ function coachSignal(frame: CoachReplayFrame, deviations: AssessmentDetail["scor
 }
 
 export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResultsProps) {
+  const videoRefs = useRef<Array<HTMLVideoElement | null>>([]);
   const [assessment, setAssessment] = useState<AssessmentDetail | null>(null);
   const [videoFailed, setVideoFailed] = useState(false);
   const [annotatedFailed, setAnnotatedFailed] = useState(false);
@@ -206,8 +207,26 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
   const [biomechanics, setBiomechanics] = useState<BiomechanicalMetrics | null>(null);
   const [coachReplay, setCoachReplay] = useState<CoachReplayTimeline | null>(null);
   const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const [error, setError] = useState("");
   const [downloadingReport, setDownloadingReport] = useState(false);
+
+  function applyPlaybackRate(rate: number) {
+    setPlaybackRate(rate);
+    videoRefs.current.forEach((video) => {
+      if (video) video.playbackRate = rate;
+    });
+  }
+
+  function replayVideos() {
+    videoRefs.current.forEach((video) => {
+      if (!video) return;
+      video.currentTime = 0;
+      video.playbackRate = playbackRate;
+      void video.play();
+    });
+    setCurrentPlaybackMs(0);
+  }
 
   async function downloadReport() {
     setDownloadingReport(true);
@@ -273,6 +292,12 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
     setVideoFailed(false);
     setCurrentPlaybackMs(0);
   }, [annotatedRequest, uploadId]);
+
+  useEffect(() => {
+    videoRefs.current.forEach((video) => {
+      if (video) video.playbackRate = playbackRate;
+    });
+  }, [playbackRate]);
 
   const metrics = useMemo<MetricRow[]>(() => {
     const deviations = assessment?.scores.metric_deviations;
@@ -406,6 +431,10 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
               {source && !failed ? (
                 <video
                   key={`${title}-${annotatedRequest}`}
+                  ref={(node) => {
+                    videoRefs.current[index] = node;
+                    if (node) node.playbackRate = playbackRate;
+                  }}
                   className="aspect-video max-h-[70vh] w-full max-w-full rounded-xl border border-border bg-black object-contain shadow-2xl"
                   autoPlay
                   controls
@@ -413,6 +442,9 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
                   playsInline
                   preload="auto"
                   src={source as string}
+                  onLoadedMetadata={(event) => {
+                    event.currentTarget.playbackRate = playbackRate;
+                  }}
                   onSeeked={(event) => setCurrentPlaybackMs(event.currentTarget.currentTime * 1000)}
                   onTimeUpdate={(event) => setCurrentPlaybackMs(event.currentTarget.currentTime * 1000)}
                   onError={() => index ? setAnnotatedFailed(true) : setVideoFailed(true)}
@@ -438,10 +470,26 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
                   Play or scrub the video above to watch metrics change with the current frame.
                 </p>
               </div>
-              <span className="inline-flex w-fit items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-xs font-black text-primary">
-                <SportIcon name="activity" className="h-4 w-4" />
-                {coachSignal(currentReplayFrame, assessment.scores.metric_deviations)}
-              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={replayVideos}>
+                  Replay
+                </Button>
+                {[0.25, 0.5, 1].map((rate) => (
+                  <Button
+                    key={rate}
+                    type="button"
+                    size="sm"
+                    variant={playbackRate === rate ? "default" : "outline"}
+                    onClick={() => applyPlaybackRate(rate)}
+                  >
+                    {rate}x
+                  </Button>
+                ))}
+                <span className="inline-flex w-fit items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-xs font-black text-primary">
+                  <SportIcon name="activity" className="h-4 w-4" />
+                  {coachSignal(currentReplayFrame, assessment.scores.metric_deviations)}
+                </span>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-5 p-4 sm:p-6">
