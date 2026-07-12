@@ -1,0 +1,255 @@
+import json
+import uuid
+from pathlib import Path
+
+from fastapi.concurrency import run_in_threadpool
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.constants.upload import COMPLETED_STATUS
+from app.models.pose_processing import PoseProcessingResult
+from app.models.video import VideoUpload
+from app.schemas.benchmark import BenchmarkScores, PhaseBenchmarkScores
+from app.schemas.biomechanics import (
+    BilateralAngleMetric,
+    BiomechanicalMetrics,
+    DistanceMetric,
+    PhaseBiomechanicalMetrics,
+    RunningBiomechanicsMetrics,
+)
+from app.schemas.pose import PoseFrame
+from app.services.benchmark import BenchmarkEngine
+from app.services.benchmark_loader import load_benchmark
+from app.services.biomechanics import BiomechanicsService
+from app.services.phase_detection import PhaseDetectionService
+from app.services.running_gait_analysis import RunningGaitAnalysisService
+
+
+class AnalysisUploadNotFoundError(LookupError):
+    pass
+
+
+class PoseProcessingRequiredError(RuntimeError):
+    pass
+
+
+class NoPoseDetectedError(ValueError):
+    pass
+
+
+class StoredAnalysisService:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def calculate_biomechanics(
+        self, *, upload_id: uuid.UUID, athlete_id: uuid.UUID
+    ) -> BiomechanicalMetrics:
+        upload = await self._load_upload(upload_id, athlete_id)
+        return await self._calculate_for_upload(upload)
+
+    async def calculate_leaderboard_biomechanics(
+        self, *, upload_id: uuid.UUID
+    ) -> BiomechanicalMetrics:
+        upload = await self._load_completed_upload(upload_id)
+        return await self._calculate_for_upload(upload)
+
+    async def _calculate_for_upload(self, upload: VideoUpload) -> BiomechanicalMetrics:
+        upload_id = upload.id
+        processing = await self._load_processing(upload_id)
+        landmark_path = Path(processing.landmark_file)
+        if not landmark_path.is_file():
+            raise PoseProcessingRequiredError(upload_id)
+
+        payload = await run_in_threadpool(self._read_json, landmark_path)
+        frames = self._pose_frames(payload)
+        if not frames:
+            raise NoPoseDetectedError("No complete pose was detected in the video")
+
+        metrics = [BiomechanicsService().calculate(frame) for frame in frames]
+        metrics_by_frame = {metric.frame_index: metric for metric in metrics}
+        detected_phases = PhaseDetectionService().detect(frames, upload.sport)
+        phase_metrics = []
+        for phase in detected_phases:
+            selected = [
+                metrics_by_frame[index]
+                for index in phase.frame_indexes
+                if index in metrics_by_frame
+            ]
+            if not selected:
+                continue
+            average = self._average_metrics(selected)
+            phase_metrics.append(
+                PhaseBiomechanicalMetrics(
+                    movement_phase=phase.name,
+                    start_frame=phase.start_frame,
+                    end_frame=phase.end_frame,
+                    frame_count=len(selected),
+                    knee_angle=average.knee_angle,
+                    elbow_angle=average.elbow_angle,
+                    hip_angle=average.hip_angle,
+                    stride_length=average.stride_length,
+                )
+            )
+        running = (
+            RunningGaitAnalysisService().analyze(frames)
+            if upload.sport.casefold() == "running"
+            else None
+        )
+        return self._average_metrics(metrics, phases=phase_metrics, running=running)
+
+    async def compare_benchmark(
+        self,
+        *,
+        upload_id: uuid.UUID,
+        athlete_id: uuid.UUID,
+        metrics: BiomechanicalMetrics,
+    ) -> BenchmarkScores:
+        upload = await self._load_upload(upload_id, athlete_id)
+        baseline = BenchmarkEngine(load_benchmark(upload.sport)).compare(metrics)
+        if not metrics.phases:
+            return baseline
+
+        phase_scores = []
+        for phase in metrics.phases:
+            phase_input = BiomechanicalMetrics(
+                frame_index=phase.start_frame,
+                timestamp_ms=0,
+                knee_angle=phase.knee_angle,
+                elbow_angle=phase.elbow_angle,
+                hip_angle=phase.hip_angle,
+                stride_length=phase.stride_length,
+            )
+            scores = BenchmarkEngine(
+                load_benchmark(upload.sport, phase.movement_phase)
+            ).compare(phase_input)
+            phase_scores.append(
+                PhaseBenchmarkScores(
+                    movement_phase=phase.movement_phase,
+                    start_frame=phase.start_frame,
+                    end_frame=phase.end_frame,
+                    frame_count=phase.frame_count,
+                    technique_score=scores.technique_score,
+                    efficiency_score=scores.efficiency_score,
+                    balance_score=scores.balance_score,
+                    overall_score=scores.overall_score or 0,
+                    metric_deviations=scores.metric_deviations,
+                )
+            )
+        total_frames = sum(score.frame_count for score in phase_scores)
+
+        def weighted(field: str) -> float:
+            return round(
+                sum(
+                    getattr(score, field) * score.frame_count
+                    for score in phase_scores
+                )
+                / total_frames,
+                2,
+            )
+
+        return BenchmarkScores(
+            technique_score=weighted("technique_score"),
+            efficiency_score=weighted("efficiency_score"),
+            balance_score=weighted("balance_score"),
+            overall_score=weighted("overall_score"),
+            metric_deviations=baseline.metric_deviations,
+            phase_scores=phase_scores,
+        )
+
+    async def _load_upload(
+        self, upload_id: uuid.UUID, athlete_id: uuid.UUID
+    ) -> VideoUpload:
+        result = await self.session.execute(
+            select(VideoUpload).where(
+                VideoUpload.id == upload_id,
+                VideoUpload.athlete_id == athlete_id,
+            )
+        )
+        upload = result.scalar_one_or_none()
+        if upload is None:
+            raise AnalysisUploadNotFoundError(upload_id)
+        return upload
+
+    async def _load_completed_upload(self, upload_id: uuid.UUID) -> VideoUpload:
+        result = await self.session.execute(
+            select(VideoUpload).where(
+                VideoUpload.id == upload_id,
+                VideoUpload.status == COMPLETED_STATUS,
+            )
+        )
+        upload = result.scalar_one_or_none()
+        if upload is None:
+            raise AnalysisUploadNotFoundError(upload_id)
+        return upload
+
+    async def _load_processing(
+        self, upload_id: uuid.UUID
+    ) -> PoseProcessingResult:
+        result = await self.session.execute(
+            select(PoseProcessingResult).where(
+                PoseProcessingResult.upload_id == upload_id
+            )
+        )
+        processing = result.scalar_one_or_none()
+        if processing is None:
+            raise PoseProcessingRequiredError(upload_id)
+        return processing
+
+    @staticmethod
+    def _read_json(path: Path) -> dict:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _pose_frames(payload: dict) -> list[PoseFrame]:
+        frames: list[PoseFrame] = []
+        try:
+            for frame in payload.get("frames", []):
+                if len(frame.get("landmarks", [])) != 33:
+                    continue
+                frames.append(
+                    PoseFrame(
+                        frame_index=frame["frameIndex"],
+                        timestamp_ms=frame["timestampMs"],
+                        landmarks=frame["landmarks"],
+                    )
+                )
+        except (KeyError, TypeError, ValidationError) as exc:
+            raise PoseProcessingRequiredError("Invalid landmark data") from exc
+        return frames
+
+    @staticmethod
+    def _average_metrics(
+        metrics: list[BiomechanicalMetrics],
+        *,
+        phases: list[PhaseBiomechanicalMetrics] | None = None,
+        running: RunningBiomechanicsMetrics | None = None,
+    ) -> BiomechanicalMetrics:
+        count = len(metrics)
+
+        def mean(values: list[float]) -> float:
+            return round(sum(values) / count, 2)
+
+        def bilateral(name: str) -> BilateralAngleMetric:
+            values = [getattr(metric, name) for metric in metrics]
+            return BilateralAngleMetric(
+                left=mean([value.left for value in values]),
+                right=mean([value.right for value in values]),
+            )
+
+        return BiomechanicalMetrics(
+            frame_index=metrics[0].frame_index,
+            timestamp_ms=metrics[0].timestamp_ms,
+            knee_angle=bilateral("knee_angle"),
+            elbow_angle=bilateral("elbow_angle"),
+            hip_angle=bilateral("hip_angle"),
+            stride_length=DistanceMetric(
+                value=round(
+                    sum(metric.stride_length.value for metric in metrics) / count,
+                    4,
+                ),
+                unit=metrics[0].stride_length.unit,
+            ),
+            phases=phases or [],
+            running=running,
+        )
