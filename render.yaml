@@ -41,7 +41,7 @@ services:
     plan: free
     rootDir: frontend
     buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile && pnpm build
-    startCommand: pnpm start -- --hostname 0.0.0.0 --port $PORT
+    startCommand: pnpm exec next start --hostname 0.0.0.0 --port $PORT
     envVars:
       - key: NODE_VERSION
         value: "22.15.0"
