@@ -14,6 +14,8 @@ from app.schemas.benchmark import BenchmarkScores, PhaseBenchmarkScores
 from app.schemas.biomechanics import (
     BilateralAngleMetric,
     BiomechanicalMetrics,
+    CoachReplayFrame,
+    CoachReplayTimeline,
     DistanceMetric,
     PhaseBiomechanicalMetrics,
     RunningBiomechanicsMetrics,
@@ -22,7 +24,7 @@ from app.schemas.pose import PoseFrame
 from app.services.benchmark import BenchmarkEngine
 from app.services.benchmark_loader import load_benchmark
 from app.services.biomechanics import BiomechanicsService
-from app.services.phase_detection import PhaseDetectionService
+from app.services.phase_detection import PhaseDetectionError, PhaseDetectionService
 from app.services.running_gait_analysis import RunningGaitAnalysisService
 
 
@@ -53,6 +55,18 @@ class StoredAnalysisService:
     ) -> BiomechanicalMetrics:
         upload = await self._load_completed_upload(upload_id)
         return await self._calculate_for_upload(upload)
+
+    async def coach_replay(
+        self, *, upload_id: uuid.UUID, athlete_id: uuid.UUID
+    ) -> CoachReplayTimeline:
+        upload = await self._load_upload(upload_id, athlete_id)
+        return await self._coach_replay_for_upload(upload)
+
+    async def leaderboard_coach_replay(
+        self, *, upload_id: uuid.UUID
+    ) -> CoachReplayTimeline:
+        upload = await self._load_completed_upload(upload_id)
+        return await self._coach_replay_for_upload(upload)
 
     async def _calculate_for_upload(self, upload: VideoUpload) -> BiomechanicalMetrics:
         upload_id = upload.id
@@ -97,6 +111,37 @@ class StoredAnalysisService:
             else None
         )
         return self._average_metrics(metrics, phases=phase_metrics, running=running)
+
+    async def _coach_replay_for_upload(self, upload: VideoUpload) -> CoachReplayTimeline:
+        processing = await self._load_processing(upload.id)
+        landmark_path = Path(processing.landmark_file)
+        if not landmark_path.is_file():
+            raise PoseProcessingRequiredError(upload.id)
+
+        payload = await run_in_threadpool(self._read_json, landmark_path)
+        frames = self._pose_frames(payload)
+        if not frames:
+            raise NoPoseDetectedError("No complete pose was detected in the video")
+
+        phase_by_frame = self._phase_by_frame(frames, upload.sport)
+        metrics = [BiomechanicsService().calculate(frame) for frame in frames]
+        return CoachReplayTimeline(
+            upload_id=str(upload.id),
+            total_frames=processing.total_frames,
+            processed_frames=processing.processed_frames,
+            frames=[
+                CoachReplayFrame(
+                    frame_index=metric.frame_index,
+                    timestamp_ms=metric.timestamp_ms,
+                    movement_phase=phase_by_frame.get(metric.frame_index, "Movement"),
+                    knee_angle=metric.knee_angle,
+                    elbow_angle=metric.elbow_angle,
+                    hip_angle=metric.hip_angle,
+                    stride_length=metric.stride_length,
+                )
+                for metric in metrics
+            ],
+        )
 
     async def compare_benchmark(
         self,
@@ -156,6 +201,18 @@ class StoredAnalysisService:
             metric_deviations=baseline.metric_deviations,
             phase_scores=phase_scores,
         )
+
+    @staticmethod
+    def _phase_by_frame(frames: list[PoseFrame], sport: str) -> dict[int, str]:
+        try:
+            phases = PhaseDetectionService().detect(frames, sport)
+        except PhaseDetectionError:
+            return {}
+        return {
+            frame_index: phase.name
+            for phase in phases
+            for frame_index in phase.frame_indexes
+        }
 
     async def _load_upload(
         self, upload_id: uuid.UUID, athlete_id: uuid.UUID

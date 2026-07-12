@@ -3,6 +3,7 @@ import type {
   AnalysisStageHandler,
   BenchmarkScores,
   BiomechanicalMetrics,
+  CoachReplayTimeline,
 } from "@/types/analysis";
 
 const ANALYSIS_TIMEOUT_MS = 10 * 60 * 1000;
@@ -56,6 +57,22 @@ export async function getStoredBiomechanics(uploadId: string) {
 export async function getLeaderboardStoredBiomechanics(uploadId: string) {
   const response = await apiClient.get<BiomechanicalMetrics>(
     `/api/v1/videos/leaderboard/${uploadId}/biomechanics`,
+    { timeout: ANALYSIS_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+export async function getCoachReplayTimeline(uploadId: string) {
+  const response = await apiClient.get<CoachReplayTimeline>(
+    `/api/v1/videos/${uploadId}/replay`,
+    { timeout: ANALYSIS_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+export async function getLeaderboardCoachReplayTimeline(uploadId: string) {
+  const response = await apiClient.get<CoachReplayTimeline>(
+    `/api/v1/videos/leaderboard/${uploadId}/replay`,
     { timeout: ANALYSIS_TIMEOUT_MS },
   );
   return response.data;

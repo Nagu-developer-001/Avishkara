@@ -96,3 +96,16 @@ class BiomechanicalMetrics(BiomechanicalMetricValues):
     timestamp_ms: int = Field(ge=0)
     phases: list[PhaseBiomechanicalMetrics] = Field(default_factory=list)
     running: RunningBiomechanicsMetrics | None = None
+
+
+class CoachReplayFrame(BiomechanicalMetricValues):
+    frame_index: int = Field(ge=0)
+    timestamp_ms: int = Field(ge=0)
+    movement_phase: str
+
+
+class CoachReplayTimeline(BaseModel):
+    upload_id: str
+    total_frames: int = Field(ge=0)
+    processed_frames: int = Field(ge=0)
+    frames: list[CoachReplayFrame] = Field(default_factory=list)

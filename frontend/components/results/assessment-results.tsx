@@ -21,9 +21,19 @@ import {
   getLeaderboardUploadedVideoUrl,
   getUploadedVideoUrl,
 } from "@/services/assessments";
-import { getLeaderboardStoredBiomechanics, getStoredBiomechanics } from "@/services/video-analysis";
+import {
+  getCoachReplayTimeline,
+  getLeaderboardCoachReplayTimeline,
+  getLeaderboardStoredBiomechanics,
+  getStoredBiomechanics,
+} from "@/services/video-analysis";
 import type { AssessmentDetail, MetricDeviation } from "@/types/assessment";
-import type { BiomechanicalMetrics, RunningBiomechanicsMetrics } from "@/types/analysis";
+import type {
+  BiomechanicalMetrics,
+  CoachReplayFrame,
+  CoachReplayTimeline,
+  RunningBiomechanicsMetrics,
+} from "@/types/analysis";
 
 type AssessmentResultsProps = {
   uploadId: string;
@@ -38,6 +48,11 @@ type VideoPanel = {
   source: string;
   icon: "video" | "activity";
   failed: boolean;
+};
+type ReplayPhaseSegment = {
+  phase: string;
+  start: number;
+  width: number;
 };
 
 function formatMetric(value: number, unit: string) {
@@ -112,12 +127,85 @@ function buildGaitSegments(strikes: number[], toeOffs: number[], maxFrame: numbe
   });
 }
 
+function averageAngle(metric: { left: number; right: number }) {
+  return (metric.left + metric.right) / 2;
+}
+
+function formatReplayAngle(metric: { left: number; right: number }) {
+  return `L ${metric.left.toFixed(0)}° / R ${metric.right.toFixed(0)}°`;
+}
+
+function nearestReplayFrame(
+  frames: CoachReplayFrame[],
+  currentMs: number,
+): CoachReplayFrame | null {
+  if (!frames.length) return null;
+  return frames.reduce((nearest, frame) => (
+    Math.abs(frame.timestamp_ms - currentMs) < Math.abs(nearest.timestamp_ms - currentMs)
+      ? frame
+      : nearest
+  ), frames[0]);
+}
+
+function replayPhaseSegments(frames: CoachReplayFrame[]): ReplayPhaseSegment[] {
+  if (!frames.length) return [];
+  const totalMs = Math.max(frames.at(-1)?.timestamp_ms ?? 1, 1);
+  const segments: ReplayPhaseSegment[] = [];
+  let start = frames[0];
+  for (const frame of frames.slice(1)) {
+    if (frame.movement_phase === start.movement_phase) continue;
+    const end = frames[frames.indexOf(frame) - 1];
+    segments.push({
+      phase: start.movement_phase,
+      start: (start.timestamp_ms / totalMs) * 100,
+      width: Math.max(1, ((end.timestamp_ms - start.timestamp_ms) / totalMs) * 100),
+    });
+    start = frame;
+  }
+  const last = frames.at(-1) ?? start;
+  segments.push({
+    phase: start.movement_phase,
+    start: (start.timestamp_ms / totalMs) * 100,
+    width: Math.max(1, ((last.timestamp_ms - start.timestamp_ms) / totalMs) * 100),
+  });
+  return segments;
+}
+
+function coachSignal(frame: CoachReplayFrame, deviations: AssessmentDetail["scores"]["metric_deviations"]) {
+  if (!deviations) return "Frame synced";
+  const kneeTarget = averageAngle({
+    left: deviations.knee_angle.left.target,
+    right: deviations.knee_angle.right.target,
+  });
+  const hipTarget = averageAngle({
+    left: deviations.hip_angle.left.target,
+    right: deviations.hip_angle.right.target,
+  });
+  const elbowTarget = averageAngle({
+    left: deviations.elbow_angle.left.target,
+    right: deviations.elbow_angle.right.target,
+  });
+  const angleDeviation = Math.max(
+    Math.abs(averageAngle(frame.knee_angle) - kneeTarget),
+    Math.abs(averageAngle(frame.hip_angle) - hipTarget),
+    Math.abs(averageAngle(frame.elbow_angle) - elbowTarget),
+  );
+  const strideDeviation = Math.abs(
+    frame.stride_length.value - deviations.stride_length.target,
+  );
+  if (angleDeviation >= 25 || strideDeviation >= 0.18) return "Needs attention";
+  if (angleDeviation >= 12 || strideDeviation >= 0.08) return "Watch closely";
+  return "Stable frame";
+}
+
 export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResultsProps) {
   const [assessment, setAssessment] = useState<AssessmentDetail | null>(null);
   const [videoFailed, setVideoFailed] = useState(false);
   const [annotatedFailed, setAnnotatedFailed] = useState(false);
   const [annotatedRequest, setAnnotatedRequest] = useState(0);
   const [biomechanics, setBiomechanics] = useState<BiomechanicalMetrics | null>(null);
+  const [coachReplay, setCoachReplay] = useState<CoachReplayTimeline | null>(null);
+  const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
   const [error, setError] = useState("");
   const [downloadingReport, setDownloadingReport] = useState(false);
 
@@ -160,6 +248,15 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
         } catch {
           setBiomechanics(null);
         }
+
+        try {
+          const replay = mode === "leaderboard"
+            ? await getLeaderboardCoachReplayTimeline(uploadId)
+            : await getCoachReplayTimeline(uploadId);
+          setCoachReplay(replay);
+        } catch {
+          setCoachReplay(null);
+        }
       } catch (loadError) {
         if (active) setError(getApiErrorMessage(loadError));
       }
@@ -174,6 +271,7 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
   useEffect(() => {
     setAnnotatedFailed(false);
     setVideoFailed(false);
+    setCurrentPlaybackMs(0);
   }, [annotatedRequest, uploadId]);
 
   const metrics = useMemo<MetricRow[]>(() => {
@@ -218,6 +316,14 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
       failed: annotatedFailed,
     },
   ], [annotatedFailed, annotatedVideoUrl, videoFailed, videoUrl]);
+  const currentReplayFrame = useMemo(
+    () => nearestReplayFrame(coachReplay?.frames ?? [], currentPlaybackMs),
+    [coachReplay, currentPlaybackMs],
+  );
+  const replaySegments = useMemo(
+    () => replayPhaseSegments(coachReplay?.frames ?? []),
+    [coachReplay],
+  );
 
   if (error) return <StatePanel tone="error" icon="activity" title="Assessment results could not be opened" description={error} actionLabel="Try again" onAction={() => window.location.reload()} />;
   if (!assessment) return <ResultsSkeleton />;
@@ -307,6 +413,8 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
                   playsInline
                   preload="auto"
                   src={source as string}
+                  onSeeked={(event) => setCurrentPlaybackMs(event.currentTarget.currentTime * 1000)}
+                  onTimeUpdate={(event) => setCurrentPlaybackMs(event.currentTarget.currentTime * 1000)}
                   onError={() => index ? setAnnotatedFailed(true) : setVideoFailed(true)}
                 >
                   <track kind="captions" />
@@ -318,6 +426,123 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
           </Card>
         ))}
       </PageSupportingSection>
+
+      {currentReplayFrame && coachReplay && (
+        <Card className="supporting-card border-primary/25 bg-gradient-to-br from-card via-card to-primary/[0.04]">
+          <CardHeader className="section-card-header">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="metric-label">Coach replay mode</p>
+                <CardTitle>Frame-synced biomechanics</CardTitle>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Play or scrub the video above to watch metrics change with the current frame.
+                </p>
+              </div>
+              <span className="inline-flex w-fit items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-xs font-black text-primary">
+                <SportIcon name="activity" className="h-4 w-4" />
+                {coachSignal(currentReplayFrame, assessment.scores.metric_deviations)}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-5 p-4 sm:p-6">
+            <div className="grid gap-3 lg:grid-cols-[1fr_1.4fr]">
+              <div className="rounded-2xl border border-border/70 bg-background/25 p-5">
+                <p className="metric-label">Current moment</p>
+                <div className="mt-4 flex flex-wrap items-end gap-4">
+                  <div>
+                    <p className="text-4xl font-black text-primary">
+                      {(currentReplayFrame.timestamp_ms / 1000).toFixed(2)}s
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Frame {currentReplayFrame.frame_index}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-accent/20 bg-accent/10 px-4 py-3">
+                    <p className="metric-label">Phase</p>
+                    <p className="mt-1 text-lg font-black text-accent">
+                      {currentReplayFrame.movement_phase}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ["Knee angle", formatReplayAngle(currentReplayFrame.knee_angle), "Lower-body loading"],
+                  ["Hip angle", formatReplayAngle(currentReplayFrame.hip_angle), "Posture and extension"],
+                  ["Elbow angle", formatReplayAngle(currentReplayFrame.elbow_angle), "Arm mechanics"],
+                  [
+                    "Stride length",
+                    `${currentReplayFrame.stride_length.value.toFixed(3)} ${currentReplayFrame.stride_length.unit.replaceAll("_", " ")}`,
+                    "Step separation",
+                  ],
+                ].map(([label, value, helper]) => (
+                  <div
+                    key={label}
+                    className="rounded-2xl border border-border/70 bg-background/25 p-4 transition duration-300 hover:-translate-y-0.5 hover:border-primary/30"
+                  >
+                    <p className="metric-label">{label}</p>
+                    <p className="mt-3 text-xl font-black tracking-tight">{value}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-border/70 bg-background/20 p-5">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="metric-label">Replay timeline</p>
+                  <h3 className="mt-1 text-lg font-black">Current phase tracker</h3>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {coachReplay.processed_frames} processed frames from {coachReplay.total_frames} video frames.
+                </p>
+              </div>
+              <div className="relative mt-5 h-10 overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.035]">
+                {replaySegments.map((segment, index) => (
+                  <span
+                    key={`${segment.phase}-${index}`}
+                    title={segment.phase}
+                    className={`absolute inset-y-0 border-r border-background/40 ${
+                      segment.phase === currentReplayFrame.movement_phase
+                        ? "bg-primary/45"
+                        : "bg-accent/20"
+                    }`}
+                    style={{ left: `${segment.start}%`, width: `${segment.width}%` }}
+                  />
+                ))}
+                <span
+                  className="absolute inset-y-0 w-1 rounded-full bg-white shadow-[0_0_24px_hsl(var(--primary))]"
+                  style={{
+                    left: `${Math.min(
+                      99,
+                      Math.max(
+                        0,
+                        (currentReplayFrame.timestamp_ms / Math.max(coachReplay.frames.at(-1)?.timestamp_ms ?? 1, 1)) * 100,
+                      ),
+                    )}%`,
+                  }}
+                />
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {[...new Set(coachReplay.frames.map((frame) => frame.movement_phase))].map((phase) => (
+                  <span
+                    key={phase}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-bold ${
+                      phase === currentReplayFrame.movement_phase
+                        ? "border-primary/30 bg-primary/10 text-primary"
+                        : "border-border/70 bg-background/30 text-muted-foreground"
+                    }`}
+                  >
+                    {phase}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {scores.phase_scores.length > 0 && (
         <Card className="supporting-card">

@@ -32,6 +32,26 @@ export type BiomechanicalMetrics = {
   running: RunningBiomechanicsMetrics | null;
 };
 
+export type CoachReplayFrame = {
+  frame_index: number;
+  timestamp_ms: number;
+  movement_phase: string;
+  knee_angle: BilateralAngleMetric;
+  elbow_angle: BilateralAngleMetric;
+  hip_angle: BilateralAngleMetric;
+  stride_length: {
+    value: number;
+    unit: string;
+  };
+};
+
+export type CoachReplayTimeline = {
+  upload_id: string;
+  total_frames: number;
+  processed_frames: number;
+  frames: CoachReplayFrame[];
+};
+
 export type RunningGaitEvents = {
   left_foot_strikes: number[];
   left_toe_offs: number[];

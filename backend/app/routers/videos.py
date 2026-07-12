@@ -10,7 +10,7 @@ from app.database.session import get_database_session
 from app.models.user import User
 from app.routers.dependencies import get_current_media_user, get_current_user
 from app.schemas.benchmark import BenchmarkScores
-from app.schemas.biomechanics import BiomechanicalMetrics
+from app.schemas.biomechanics import BiomechanicalMetrics, CoachReplayTimeline
 from app.schemas.leaderboard import LeaderboardResponse
 from app.schemas.processing import VideoProcessingResponse
 from app.schemas.progress import AthleteProgressAnalytics
@@ -183,6 +183,32 @@ async def leaderboard_stored_biomechanics(
         ) from exc
 
 
+@router.get("/leaderboard/{upload_id}/replay", response_model=CoachReplayTimeline)
+async def leaderboard_coach_replay(
+    upload_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> CoachReplayTimeline:
+    try:
+        return await StoredAnalysisService(session).leaderboard_coach_replay(
+            upload_id=upload_id
+        )
+    except AnalysisUploadNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found"
+        ) from exc
+    except PoseProcessingRequiredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Pose processing must be completed first",
+        ) from exc
+    except NoPoseDetectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
 @router.get("/leaderboard/{upload_id}/report")
 async def leaderboard_assessment_report(
     upload_id: uuid.UUID,
@@ -256,6 +282,32 @@ async def leaderboard_annotated_video_content(
             detail="Annotated analysis video is not available",
         ) from exc
     return FileResponse(video_path, media_type="video/mp4")
+
+
+@router.get("/{upload_id}/replay", response_model=CoachReplayTimeline)
+async def coach_replay(
+    upload_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_database_session)],
+) -> CoachReplayTimeline:
+    try:
+        return await StoredAnalysisService(session).coach_replay(
+            upload_id=upload_id, athlete_id=current_user.id
+        )
+    except AnalysisUploadNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found"
+        ) from exc
+    except PoseProcessingRequiredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Pose processing must be completed first",
+        ) from exc
+    except NoPoseDetectedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/{upload_id}/results", response_model=AssessmentDetail)
