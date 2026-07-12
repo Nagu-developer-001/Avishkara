@@ -158,20 +158,6 @@ export function AuthForm({ mode }: AuthFormProps) {
                 </p>
               )}
 
-              {isLogin && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEmail("athlete@demo.com");
-                    setPassword("Demo@2026");
-                    setError(null);
-                  }}
-                  className="w-full rounded-xl border border-accent/20 bg-accent/[0.06] px-4 py-3 text-sm font-bold text-accent transition hover:bg-accent/[0.1]"
-                >
-                  Use Athlete Demo Account
-                </button>
-              )}
-
               <Button
                 type="submit"
                 className="w-full"
