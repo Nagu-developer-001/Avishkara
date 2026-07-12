@@ -1,5 +1,6 @@
 import { apiClient } from "@/services/api-client";
 import type {
+  AnalysisConfidence,
   AnalysisStageHandler,
   BenchmarkScores,
   BiomechanicalMetrics,
@@ -73,6 +74,22 @@ export async function getCoachReplayTimeline(uploadId: string) {
 export async function getLeaderboardCoachReplayTimeline(uploadId: string) {
   const response = await apiClient.get<CoachReplayTimeline>(
     `/api/v1/videos/leaderboard/${uploadId}/replay`,
+    { timeout: ANALYSIS_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+export async function getAnalysisConfidence(uploadId: string) {
+  const response = await apiClient.get<AnalysisConfidence>(
+    `/api/v1/videos/${uploadId}/confidence`,
+    { timeout: ANALYSIS_TIMEOUT_MS },
+  );
+  return response.data;
+}
+
+export async function getLeaderboardAnalysisConfidence(uploadId: string) {
+  const response = await apiClient.get<AnalysisConfidence>(
+    `/api/v1/videos/leaderboard/${uploadId}/confidence`,
     { timeout: ANALYSIS_TIMEOUT_MS },
   );
   return response.data;

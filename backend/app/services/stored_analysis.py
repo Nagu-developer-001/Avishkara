@@ -12,6 +12,7 @@ from app.models.pose_processing import PoseProcessingResult
 from app.models.video import VideoUpload
 from app.schemas.benchmark import BenchmarkScores, PhaseBenchmarkScores
 from app.schemas.biomechanics import (
+    AnalysisConfidence,
     BilateralAngleMetric,
     BiomechanicalMetrics,
     CoachReplayFrame,
@@ -26,6 +27,7 @@ from app.services.benchmark_loader import load_benchmark
 from app.services.biomechanics import BiomechanicsService
 from app.services.phase_detection import PhaseDetectionError, PhaseDetectionService
 from app.services.running_gait_analysis import RunningGaitAnalysisService
+from app.services.video_quality import FULL_BODY_LANDMARKS, MIN_LANDMARK_VISIBILITY
 
 
 class AnalysisUploadNotFoundError(LookupError):
@@ -67,6 +69,18 @@ class StoredAnalysisService:
     ) -> CoachReplayTimeline:
         upload = await self._load_completed_upload(upload_id)
         return await self._coach_replay_for_upload(upload)
+
+    async def analysis_confidence(
+        self, *, upload_id: uuid.UUID, athlete_id: uuid.UUID
+    ) -> AnalysisConfidence:
+        upload = await self._load_upload(upload_id, athlete_id)
+        return await self._analysis_confidence_for_upload(upload)
+
+    async def leaderboard_analysis_confidence(
+        self, *, upload_id: uuid.UUID
+    ) -> AnalysisConfidence:
+        upload = await self._load_completed_upload(upload_id)
+        return await self._analysis_confidence_for_upload(upload)
 
     async def _calculate_for_upload(self, upload: VideoUpload) -> BiomechanicalMetrics:
         upload_id = upload.id
@@ -143,6 +157,53 @@ class StoredAnalysisService:
             ],
         )
 
+    async def _analysis_confidence_for_upload(self, upload: VideoUpload) -> AnalysisConfidence:
+        processing = await self._load_processing(upload.id)
+        landmark_path = Path(processing.landmark_file)
+        if not landmark_path.is_file():
+            raise PoseProcessingRequiredError(upload.id)
+
+        payload = await run_in_threadpool(self._read_json, landmark_path)
+        raw_frames = payload.get("frames", [])
+        detected_frames = [
+            frame for frame in raw_frames if len(frame.get("landmarks", [])) == 33
+        ]
+        full_body_frames = [
+            frame for frame in detected_frames if self._has_full_body(frame)
+        ]
+        total_frames = max(int(payload.get("totalFrames", processing.total_frames)), 1)
+        pose_detection_ratio = min(1.0, len(detected_frames) / total_frames)
+        full_body_ratio = (
+            len(full_body_frames) / len(detected_frames)
+            if detected_frames
+            else 0.0
+        )
+        visibility = self._average_visibility(full_body_frames or detected_frames)
+        gait_score, gait_label = await self._gait_reliability(upload, detected_frames)
+
+        score = round(
+            40 * pose_detection_ratio
+            + 35 * full_body_ratio
+            + 15 * visibility
+            + 10 * gait_score,
+            1,
+        )
+        warnings = self._confidence_warnings(
+            pose_detection_ratio=pose_detection_ratio,
+            full_body_ratio=full_body_ratio,
+            visibility=visibility,
+            gait_label=gait_label,
+        )
+        return AnalysisConfidence(
+            score=score,
+            rating=self._confidence_rating(score),
+            pose_detection_ratio=round(pose_detection_ratio, 3),
+            full_body_visibility_ratio=round(full_body_ratio, 3),
+            average_landmark_visibility=round(visibility, 3),
+            gait_reliability=gait_label,
+            warnings=warnings,
+        )
+
     async def compare_benchmark(
         self,
         *,
@@ -213,6 +274,78 @@ class StoredAnalysisService:
             for phase in phases
             for frame_index in phase.frame_indexes
         }
+
+    async def _gait_reliability(
+        self, upload: VideoUpload, detected_frames: list[dict]
+    ) -> tuple[float, str | None]:
+        if upload.sport.casefold() != "running":
+            return 1.0, None
+        try:
+            frames = self._pose_frames({"frames": detected_frames})
+            running = RunningGaitAnalysisService().analyze(frames)
+        except (NoPoseDetectedError, PoseProcessingRequiredError, ValidationError):
+            return 0.0, "Low"
+        reliable = (
+            running.step_count >= 6
+            and len(running.stride_analysis.foot_strikes) >= 6
+            and len(running.stride_analysis.step_intervals) >= 5
+        )
+        return (1.0, "Reliable") if reliable else (0.35, "Low")
+
+    @staticmethod
+    def _has_full_body(frame: dict) -> bool:
+        landmarks = {
+            landmark.get("name"): landmark
+            for landmark in frame.get("landmarks", [])
+        }
+        return all(
+            name in landmarks
+            and (landmarks[name].get("visibility") or 0) >= MIN_LANDMARK_VISIBILITY
+            and 0 <= landmarks[name].get("x", -1) <= 1
+            and 0 <= landmarks[name].get("y", -1) <= 1
+            for name in FULL_BODY_LANDMARKS
+        )
+
+    @staticmethod
+    def _average_visibility(frames: list[dict]) -> float:
+        values = [
+            landmark.get("visibility") or 0
+            for frame in frames
+            for landmark in frame.get("landmarks", [])
+            if landmark.get("name") in FULL_BODY_LANDMARKS
+        ]
+        if not values:
+            return 0.0
+        return min(1.0, max(0.0, sum(values) / len(values)))
+
+    @staticmethod
+    def _confidence_rating(score: float) -> str:
+        if score >= 85:
+            return "High"
+        if score >= 70:
+            return "Good"
+        if score >= 50:
+            return "Moderate"
+        return "Low"
+
+    @staticmethod
+    def _confidence_warnings(
+        *,
+        pose_detection_ratio: float,
+        full_body_ratio: float,
+        visibility: float,
+        gait_label: str | None,
+    ) -> list[str]:
+        warnings: list[str] = []
+        if pose_detection_ratio < 0.65:
+            warnings.append("Pose was not detected consistently across the video.")
+        if full_body_ratio < 0.7:
+            warnings.append("Full body was not visible in enough frames.")
+        if visibility < 0.65:
+            warnings.append("Important body landmarks had low visibility.")
+        if gait_label == "Low":
+            warnings.append("Running gait events were not reliable enough for stride timing.")
+        return warnings
 
     async def _load_upload(
         self, upload_id: uuid.UUID, athlete_id: uuid.UUID

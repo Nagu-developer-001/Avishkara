@@ -52,6 +52,16 @@ export type CoachReplayTimeline = {
   frames: CoachReplayFrame[];
 };
 
+export type AnalysisConfidence = {
+  score: number;
+  rating: "High" | "Good" | "Moderate" | "Low" | string;
+  pose_detection_ratio: number;
+  full_body_visibility_ratio: number;
+  average_landmark_visibility: number;
+  gait_reliability: "Reliable" | "Low" | null | string;
+  warnings: string[];
+};
+
 export type RunningGaitEvents = {
   left_foot_strikes: number[];
   left_toe_offs: number[];

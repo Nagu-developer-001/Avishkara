@@ -109,3 +109,13 @@ class CoachReplayTimeline(BaseModel):
     total_frames: int = Field(ge=0)
     processed_frames: int = Field(ge=0)
     frames: list[CoachReplayFrame] = Field(default_factory=list)
+
+
+class AnalysisConfidence(BaseModel):
+    score: float = Field(ge=0, le=100)
+    rating: str
+    pose_detection_ratio: float = Field(ge=0, le=1)
+    full_body_visibility_ratio: float = Field(ge=0, le=1)
+    average_landmark_visibility: float = Field(ge=0, le=1)
+    gait_reliability: str | None = None
+    warnings: list[str] = Field(default_factory=list)

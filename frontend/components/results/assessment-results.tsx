@@ -22,13 +22,16 @@ import {
   getUploadedVideoUrl,
 } from "@/services/assessments";
 import {
+  getAnalysisConfidence,
   getCoachReplayTimeline,
+  getLeaderboardAnalysisConfidence,
   getLeaderboardCoachReplayTimeline,
   getLeaderboardStoredBiomechanics,
   getStoredBiomechanics,
 } from "@/services/video-analysis";
 import type { AssessmentDetail, MetricDeviation } from "@/types/assessment";
 import type {
+  AnalysisConfidence,
   BiomechanicalMetrics,
   CoachReplayFrame,
   CoachReplayTimeline,
@@ -70,6 +73,17 @@ function scoreTone(score: number) {
 function formatOptionalMetric(value: number | null, suffix = "") {
   if (value == null) return "â€”";
   return `${value.toFixed(value >= 100 ? 0 : 2)}${suffix}`;
+}
+
+function formatPercent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function confidenceTone(confidence: AnalysisConfidence) {
+  if (confidence.score >= 85) return "High trust";
+  if (confidence.score >= 70) return "Good trust";
+  if (confidence.score >= 50) return "Review video";
+  return "Record again";
 }
 
 function runningMetricCards(running: RunningBiomechanicsMetrics): RunningMetricCard[] {
@@ -206,6 +220,7 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
   const [annotatedRequest, setAnnotatedRequest] = useState(0);
   const [biomechanics, setBiomechanics] = useState<BiomechanicalMetrics | null>(null);
   const [coachReplay, setCoachReplay] = useState<CoachReplayTimeline | null>(null);
+  const [analysisConfidence, setAnalysisConfidence] = useState<AnalysisConfidence | null>(null);
   const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [error, setError] = useState("");
@@ -275,6 +290,15 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
           setCoachReplay(replay);
         } catch {
           setCoachReplay(null);
+        }
+
+        try {
+          const confidence = mode === "leaderboard"
+            ? await getLeaderboardAnalysisConfidence(uploadId)
+            : await getAnalysisConfidence(uploadId);
+          setAnalysisConfidence(confidence);
+        } catch {
+          setAnalysisConfidence(null);
         }
       } catch (loadError) {
         if (active) setError(getApiErrorMessage(loadError));
@@ -420,6 +444,76 @@ export function AssessmentResults({ uploadId, mode = "athlete" }: AssessmentResu
           </CardContent>
         </Card>
       </section>
+
+      {analysisConfidence && (
+        <Card className="supporting-card border-accent/20 bg-gradient-to-br from-card via-card to-accent/[0.04]">
+          <CardHeader className="section-card-header">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="metric-label">Analysis confidence</p>
+                <CardTitle>Can we trust this video analysis?</CardTitle>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  This measures video and pose quality. It does not change the athlete performance score.
+                </p>
+              </div>
+              <span className="inline-flex w-fit items-center gap-2 rounded-full border border-accent/20 bg-accent/10 px-3 py-1.5 text-xs font-black text-accent">
+                <SportIcon name="pulse" className="h-4 w-4" />
+                {confidenceTone(analysisConfidence)}
+              </span>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-4 p-4 lg:grid-cols-[0.9fr_1.5fr] sm:p-6">
+            <div className="rounded-2xl border border-border/70 bg-background/25 p-6">
+              <p className="metric-label">Reliability score</p>
+              <p className="mt-4 text-6xl font-black tracking-[-0.06em] text-accent">
+                <AnimatedNumber value={analysisConfidence.score} decimals={1} />
+                <span className="ml-2 text-base tracking-normal text-muted-foreground">/100</span>
+              </p>
+              <p className="mt-2 text-sm font-bold text-foreground">{analysisConfidence.rating}</p>
+              <div className="mt-5 h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-accent to-primary"
+                  style={{ width: `${analysisConfidence.score}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-4">
+                {[
+                  ["Pose detection", formatPercent(analysisConfidence.pose_detection_ratio)],
+                  ["Full body", formatPercent(analysisConfidence.full_body_visibility_ratio)],
+                  ["Landmark clarity", formatPercent(analysisConfidence.average_landmark_visibility)],
+                  ["Gait reliability", analysisConfidence.gait_reliability ?? "N/A"],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-2xl border border-border/70 bg-background/25 p-4">
+                    <p className="metric-label">{label}</p>
+                    <p className="mt-3 text-2xl font-black">{value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {analysisConfidence.warnings.length > 0 ? (
+                <div className="rounded-2xl border border-amber-400/30 bg-amber-400/[0.08] p-4">
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-300">Reliability notes</p>
+                  <ul className="mt-3 space-y-2 text-sm text-muted-foreground">
+                    {analysisConfidence.warnings.map((warning) => (
+                      <li key={warning} className="flex gap-2">
+                        <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-300" />
+                        <span>{warning}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-accent/20 bg-accent/[0.06] p-4 text-sm text-muted-foreground">
+                  Video quality and pose extraction look stable for this assessment.
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <PageSupportingSection className="content-grid xl:grid-cols-2" label="Video comparison">
         {videoPanels.map(({ eyebrow, title, source, icon, failed }, index) => (
