@@ -2,15 +2,11 @@ services:
   - type: web
     name: avishkara-api
     runtime: python
-    plan: starter
+    plan: free
     rootDir: backend
     buildCommand: pip install --upgrade pip && pip install -e .
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    disk:
-      name: avishkara-media
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -31,11 +27,11 @@ services:
       - key: CORS_ORIGIN_REGEX
         value: '^https://avishkara-web\.onrender\.com$'
       - key: UPLOAD_DIRECTORY
-        value: /var/data/uploads
+        value: uploads
       - key: LANDMARK_DIRECTORY
-        value: /var/data/landmarks
+        value: landmarks
       - key: ANNOTATED_VIDEO_DIRECTORY
-        value: /var/data/annotated_videos
+        value: annotated_videos
       - key: POSE_LANDMARKER_MODEL_PATH
         value: models/pose_landmarker_lite.task
 
