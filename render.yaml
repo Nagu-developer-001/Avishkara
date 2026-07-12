@@ -40,9 +40,11 @@ services:
     runtime: node
     plan: free
     rootDir: frontend
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build
+    buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile && pnpm build
     startCommand: pnpm start -- --hostname 0.0.0.0 --port $PORT
     envVars:
+      - key: NODE_VERSION
+        value: "22.15.0"
       - key: NEXT_PUBLIC_API_BASE_URL
         value: https://avishkara-api.onrender.com
 
