@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     annotated_video_directory: Path = (
         Path(__file__).resolve().parents[2] / "annotated_videos"
     )
+    generate_annotated_video: bool = True
+    pose_processing_max_dimension: int = Field(default=960, ge=320, le=2160)
 
     @field_validator("database_url", mode="before")
     @classmethod

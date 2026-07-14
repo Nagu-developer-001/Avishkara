@@ -70,17 +70,16 @@ class VideoProcessingService:
         }
         await run_in_threadpool(self._write_json, landmark_path, payload)
         annotated_path = self._annotated_path(athlete_id, upload_id)
-        try:
-            await run_in_threadpool(
-                BiomechanicalVisualizationService().generate,
-                video_path=video_path,
-                pose_result=pose_result,
-                output_path=annotated_path,
-            )
-        except Exception:
-            landmark_path.unlink(missing_ok=True)
-            annotated_path.unlink(missing_ok=True)
-            raise
+        if settings.generate_annotated_video:
+            try:
+                await run_in_threadpool(
+                    BiomechanicalVisualizationService().generate,
+                    video_path=video_path,
+                    pose_result=pose_result,
+                    output_path=annotated_path,
+                )
+            except Exception:
+                annotated_path.unlink(missing_ok=True)
 
         await self._save_result(
             upload_id=upload_id,

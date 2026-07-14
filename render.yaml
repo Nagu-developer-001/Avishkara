@@ -34,6 +34,10 @@ services:
         value: annotated_videos
       - key: POSE_LANDMARKER_MODEL_PATH
         value: models/pose_landmarker_lite.task
+      - key: GENERATE_ANNOTATED_VIDEO
+        value: "false"
+      - key: POSE_PROCESSING_MAX_DIMENSION
+        value: "640"
 
   - type: web
     name: avishkara-web

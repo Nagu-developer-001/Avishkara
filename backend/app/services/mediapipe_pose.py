@@ -78,6 +78,7 @@ class MediaPipePoseService:
                         break
 
                     timestamp_ms = round(frame_index * 1000 / fps)
+                    frame = self._resize_for_pose(frame)
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     image = mp.Image(
                         image_format=mp.ImageFormat.SRGB,
@@ -134,3 +135,19 @@ class MediaPipePoseService:
             )
             for index, landmark in enumerate(raw_landmarks)
         ]
+
+    @staticmethod
+    def _resize_for_pose(frame):
+        height, width = frame.shape[:2]
+        longest_side = max(width, height)
+        max_dimension = settings.pose_processing_max_dimension
+        if longest_side <= max_dimension:
+            return frame
+        scale = max_dimension / longest_side
+        resized_width = max(2, int(round(width * scale)))
+        resized_height = max(2, int(round(height * scale)))
+        return cv2.resize(
+            frame,
+            (resized_width, resized_height),
+            interpolation=cv2.INTER_AREA,
+        )
