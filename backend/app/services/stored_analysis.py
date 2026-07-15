@@ -171,8 +171,10 @@ class StoredAnalysisService:
         full_body_frames = [
             frame for frame in detected_frames if self._has_full_body(frame)
         ]
-        total_frames = max(int(payload.get("totalFrames", processing.total_frames)), 1)
-        pose_detection_ratio = min(1.0, len(detected_frames) / total_frames)
+        processed_frames = max(
+            int(payload.get("processedFrames", processing.processed_frames)), 1
+        )
+        pose_detection_ratio = min(1.0, len(detected_frames) / processed_frames)
         full_body_ratio = (
             len(full_body_frames) / len(detected_frames)
             if detected_frames

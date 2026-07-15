@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     )
     generate_annotated_video: bool = True
     pose_processing_max_dimension: int = Field(default=960, ge=320, le=2160)
+    pose_processing_frame_stride: int = Field(default=1, ge=1, le=10)
 
     @field_validator("database_url", mode="before")
     @classmethod

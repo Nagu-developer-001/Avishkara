@@ -38,6 +38,8 @@ services:
         value: "false"
       - key: POSE_PROCESSING_MAX_DIMENSION
         value: "640"
+      - key: POSE_PROCESSING_FRAME_STRIDE
+        value: "3"
 
   - type: web
     name: avishkara-web

@@ -70,12 +70,16 @@ class MediaPipePoseService:
 
         frames: list[ProcessedPoseFrame] = []
         frame_index = 0
+        frame_stride = settings.pose_processing_frame_stride
         try:
             with mp.tasks.vision.PoseLandmarker.create_from_options(options) as landmarker:
                 while True:
                     success, frame = capture.read()
                     if not success:
                         break
+                    if frame_index % frame_stride != 0:
+                        frame_index += 1
+                        continue
 
                     timestamp_ms = round(frame_index * 1000 / fps)
                     frame = self._resize_for_pose(frame)
@@ -104,7 +108,7 @@ class MediaPipePoseService:
         return FullVideoPoseResult(
             fps=fps,
             total_frames=frame_index,
-            processed_frames=frame_index,
+            processed_frames=len(frames),
             frames=frames,
         )
 
